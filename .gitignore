@@ -1,0 +1,58 @@
+# ===============================
+# Python
+# ===============================
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# ===============================
+# Virtual Environment
+# ===============================
+venv/
+.env/
+.env.*
+
+# ===============================
+# Jupyter / IDE
+# ===============================
+.ipynb_checkpoints/
+.vscode/
+.idea/
+*.swp
+
+# ===============================
+# OS files
+# ===============================
+.DS_Store
+Thumbs.db
+
+# ===============================
+# Model & Training Artifacts
+# ===============================
+models/
+features/
+tokenizer/*.pkl
+*.h5
+*.pkl
+
+# ===============================
+# Logs & Outputs
+# ===============================
+logs/
+results/
+*.log
+
+# ===============================
+# Dataset (OPTIONAL – IMPORTANT)
+# ===============================
+data/images/
+data/captions/
+data/splits/
+
+# If you want to keep folder structure but not data:
+# !data/.gitkeep
+# !data/images/.gitkeep
+# !data/captions/.gitkeep
+# !data/splits/.gitkeep
