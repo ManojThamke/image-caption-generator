@@ -37,8 +37,9 @@ TOKENIZER_PATH = os.path.join(TOKENIZER_DIR, "tokenizer.pkl")
 IMAGE_SIZE = 224
 EMBEDDING_DIM = 256
 LSTM_UNITS = 256
-BATCH_SIZE = 32
-EPOCHS = 15
+
+BATCH_SIZE = 64      # ↑ faster training (safe)
+EPOCHS = 5           # ↓ fewer epochs (safe)
 
 # ==============================
 # TEXT PARAMETERS
