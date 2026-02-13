@@ -1,8 +1,7 @@
 # src/model.py
 
-import tensorflow as tf
 from tensorflow.keras.layers import (
-    Input, Dense, Embedding, LSTM, Add, Dropout, Activation, RepeatVector
+    Input, Dense, Embedding, LSTM, Dropout
 )
 from tensorflow.keras.models import Model
 from tensorflow.keras.optimizers import Adam
@@ -12,51 +11,45 @@ from config import (
 )
 
 # ==============================
-# SIMPLE ATTENTION MECHANISM
-# ==============================
-def attention_block(image_features, lstm_output):
-    """
-    image_features: (batch, 2048)
-    lstm_output: (batch, lstm_units)
-    """
-    image_dense = Dense(LSTM_UNITS, activation="relu")(image_features)
-    merged = Add()([image_dense, lstm_output])
-    attention = Dense(LSTM_UNITS, activation="tanh")(merged)
-    return attention
-
-
-# ==============================
-# BUILD MODEL
+# BUILD IMAGE CAPTIONING MODEL
 # ==============================
 def build_model():
-    # -------- Image features input --------
+    # -------- Image feature input --------
     image_input = Input(shape=(2048,), name="image_features")
-    img_dense = Dense(EMBEDDING_DIM, activation="relu")(image_input)
-    img_dense = Dropout(0.5)(img_dense)
+    image_dense = Dense(EMBEDDING_DIM, activation="relu")(image_input)
+    image_dense = Dropout(0.5)(image_dense)
 
     # -------- Text input --------
-    text_input = Input(shape=(MAX_CAPTION_LENGTH,), name="caption_input")
-    embedding = Embedding(
+    caption_input = Input(
+        shape=(MAX_CAPTION_LENGTH,),
+        name="caption_input"
+    )
+
+    caption_embedding = Embedding(
         input_dim=VOCAB_SIZE,
         output_dim=EMBEDDING_DIM,
         mask_zero=True
-    )(text_input)
+    )(caption_input)
 
-    lstm_out = LSTM(LSTM_UNITS)(embedding)
+    # -------- LSTM Decoder --------
+    lstm_output = LSTM(
+        LSTM_UNITS,
+        dropout=0.5,
+        recurrent_dropout=0.3
+    )(caption_embedding, initial_state=[image_dense, image_dense])
 
-    # -------- Attention --------
-    attn_out = attention_block(img_dense, lstm_out)
-
-    # -------- Combine & output --------
-    combined = Add()([img_dense, attn_out])
-    combined = Dense(LSTM_UNITS, activation="relu")(combined)
-    outputs = Dense(VOCAB_SIZE, activation="softmax")(combined)
+    # -------- Output layer --------
+    outputs = Dense(VOCAB_SIZE, activation="softmax")(lstm_output)
 
     # -------- Compile model --------
-    model = Model(inputs=[image_input, text_input], outputs=outputs)
+    model = Model(
+        inputs=[image_input, caption_input],
+        outputs=outputs
+    )
+
     model.compile(
         loss="sparse_categorical_crossentropy",
-        optimizer=Adam(learning_rate=0.001)
+        optimizer=Adam(learning_rate=0.0005)
     )
 
     return model
