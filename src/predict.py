@@ -1,98 +1,185 @@
 # src/predict.py
 
 import os
+import json
 import pickle
 import numpy as np
+import tensorflow as tf
+
+# Suppress TensorFlow logs
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 
 from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing.sequence import pad_sequences
 from tensorflow.keras.preprocessing.image import load_img, img_to_array
 from tensorflow.keras.applications.resnet50 import ResNet50, preprocess_input
 
-from config import IMAGE_SIZE, MAX_CAPTION_LENGTH, TOKENIZER_PATH
 
-MODEL_PATH = "models/final_caption_model.h5"
+# ==============================
+# LOAD CONFIG SAFELY
+# ==============================
+from config import (
+    IMAGE_SIZE,
+    MODEL_PATH,
+    TOKENIZER_PATH
+)
+
+MODEL_DIR = os.path.dirname(MODEL_PATH)
+MODEL_CONFIG_PATH = os.path.join(MODEL_DIR, "model_config.json")
 
 
 # ==============================
-# LOAD MODEL & TOKENIZER
+# LOAD MODEL, TOKENIZER, CNN
 # ==============================
-print("[INFO] Loading model...")
-model = load_model(MODEL_PATH)
+def load_resources():
+    print("[INFO] Loading trained model, tokenizer & CNN...")
 
-with open(TOKENIZER_PATH, "rb") as f:
-    tokenizer = pickle.load(f)
+    if not os.path.exists(MODEL_PATH):
+        raise FileNotFoundError("Trained model not found.")
+    if not os.path.exists(TOKENIZER_PATH):
+        raise FileNotFoundError("Tokenizer not found.")
+    if not os.path.exists(MODEL_CONFIG_PATH):
+        raise FileNotFoundError("model_config.json not found.")
 
-index_word = tokenizer.index_word
+    # Load model
+    model = load_model(MODEL_PATH)
+
+    # Load tokenizer
+    with open(TOKENIZER_PATH, "rb") as f:
+        tokenizer = pickle.load(f)
+
+    # Load model config (IMPORTANT)
+    with open(MODEL_CONFIG_PATH, "r") as f:
+        model_config = json.load(f)
+
+    # CNN for feature extraction
+    cnn = ResNet50(weights="imagenet", include_top=False, pooling="avg")
+
+    return model, tokenizer, model_config, cnn
+
+
+model, tokenizer, model_config, cnn_model = load_resources()
+
+MAX_CAPTION_LENGTH = model_config["max_caption_length"]
+
 word_index = tokenizer.word_index
+index_word = tokenizer.index_word
 
 
 # ==============================
-# CNN FEATURE EXTRACTOR
+# SPECIAL TOKENS (COCO SAFE)
 # ==============================
-cnn_model = ResNet50(weights="imagenet", include_top=False, pooling="avg")
+START_TOKEN = "<start>"
+END_TOKEN = "<end>"
+
+if START_TOKEN not in word_index or END_TOKEN not in word_index:
+    raise ValueError("Start/End tokens not found in tokenizer.")
 
 
-def extract_feature(img_path):
-    image = load_img(img_path, target_size=(IMAGE_SIZE, IMAGE_SIZE))
+# ==============================
+# IMAGE FEATURE EXTRACTION
+# ==============================
+def extract_image_features(image_path):
+    image = load_img(image_path, target_size=(IMAGE_SIZE, IMAGE_SIZE))
     image = img_to_array(image)
     image = np.expand_dims(image, axis=0)
     image = preprocess_input(image)
-    return cnn_model.predict(image, verbose=0)[0]
+
+    feature = cnn_model.predict(image, verbose=0)
+    return feature[0]
 
 
 # ==============================
-# CLEAN GREEDY + DIVERSITY SAMPLING
+# BEAM SEARCH CAPTION GENERATION
 # ==============================
-def generate_caption(feature, temperature=1.2):
-    in_seq = []
-    caption = []
+def generate_caption_beam(feature, beam_width=5, alpha=0.7):
+    """
+    Beam Search with length normalization
+    """
+    start_id = word_index[START_TOKEN]
+    end_id = word_index[END_TOKEN]
+
+    sequences = [[ [start_id], 0.0 ]]
+    feature = feature.reshape(1, -1)
 
     for _ in range(MAX_CAPTION_LENGTH):
-        padded = pad_sequences([in_seq], maxlen=MAX_CAPTION_LENGTH)
-        preds = model.predict([feature.reshape(1, -1), padded], verbose=0)[0]
+        all_candidates = []
 
-        preds = np.log(preds + 1e-10) / temperature
-        probs = np.exp(preds) / np.sum(np.exp(preds))
+        for seq, score in sequences:
+            if seq[-1] == end_id:
+                all_candidates.append([seq, score])
+                continue
 
-        word_id = np.random.choice(len(probs), p=probs)
-        word = index_word.get(word_id)
+            padded_seq = pad_sequences(
+                [seq],
+                maxlen=MAX_CAPTION_LENGTH,
+                padding="post"
+            )
 
-        if word is None or word in caption:
-            continue
+            preds = model.predict([feature, padded_seq], verbose=0)[0]
+            top_k = np.argsort(preds)[-beam_width:]
 
-        caption.append(word)
-        in_seq.append(word_id)
+            for word_id in top_k:
+                prob = preds[word_id]
+                candidate = [
+                    seq + [word_id],
+                    score + np.log(prob + 1e-10)
+                ]
+                all_candidates.append(candidate)
 
-        if len(caption) >= 12:
+        # Length normalization
+        def normalized_score(candidate):
+            seq, raw_score = candidate
+            length = len(seq)
+            return raw_score / (length ** alpha)
+
+        ordered = sorted(
+            all_candidates,
+            key=normalized_score,
+            reverse=True
+        )
+
+        sequences = ordered[:beam_width]
+
+        if all(seq[-1] == end_id for seq, _ in sequences):
             break
 
-    return " ".join(caption)
+    # Decode captions
+    captions = []
+    for seq, _ in sequences:
+        words = [
+            index_word.get(i)
+            for i in seq
+            if i not in [start_id, end_id]
+        ]
+        caption = " ".join(words)
+        captions.append(caption)
 
-
-def generate_multiple_captions(feature, k=3):
-    captions = set()
-    while len(captions) < k:
-        captions.add(generate_caption(feature))
-    return list(captions)
+    return list(set(captions))
 
 
 # ==============================
 # MAIN
 # ==============================
 if __name__ == "__main__":
-    path = input("\nEnter image path: ").strip().strip('"').strip("'")
-    path = os.path.normpath(path)
+    print("\n🧠 COCO Image Caption Generator")
+    image_path = input("📷 Enter image path: ").strip().replace('"', '')
 
-    if not os.path.exists(path):
-        print("❌ Image not found")
+    if not os.path.exists(image_path):
+        print("❌ Image not found.")
         exit()
 
-    print("[INFO] Extracting features...")
-    feature = extract_feature(path)
+    print("[INFO] Extracting image features...")
+    features = extract_image_features(image_path)
 
-    print("\n🖼️ Generated Captions:")
-    captions = generate_multiple_captions(feature, k=3)
+    print("[INFO] Generating captions...")
+    captions = generate_caption_beam(features, beam_width=5)
 
-    for i, cap in enumerate(captions, 1):
-        print(f"{i}. {cap}")
+    print("\n✨ FINAL PREDICTIONS:")
+    captions = [c for c in captions if len(c.split()) > 3]
+
+    if captions:
+        for i, cap in enumerate(captions[:3], 1):
+            print(f"{i}. {cap.capitalize()}")
+    else:
+        print("No good captions generated. Try another image.")
